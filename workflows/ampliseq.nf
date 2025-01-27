@@ -104,7 +104,7 @@ ch_report_abstract = params.report_abstract ? Channel.fromPath(params.report_abs
 // Set non-params Variables
 
 single_end = params.single_end
-if (params.pacbio || params.iontorrent) {
+if (params.pacbio || params.iontorrent || params.nanopore) {
     single_end = true
 }
 
@@ -220,6 +220,7 @@ include { SUMMARY_REPORT                } from '../modules/local/summary_report'
 include { PHYLOSEQ_INTAX as PHYLOSEQ_INTAX_PPLACE } from '../modules/local/phyloseq_intax'
 include { PHYLOSEQ_INTAX as PHYLOSEQ_INTAX_QIIME2 } from '../modules/local/phyloseq_intax'
 include { FILTER_CLUSTERS               } from '../modules/local/filter_clusters'
+include { EMU_ABUNDANCE              } from '../modules/local/emu_abundance'
 
 //
 // SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
@@ -367,24 +368,32 @@ workflow AMPLISEQ {
         ch_trimmed_reads = RENAME_RAW_DATA_FILES.out.fastq
     }
 
+    if (params.nanopore){
+        EMU_ABUNDANCE(ch_trimmed_reads)
+    }
+
     //
     // SUBWORKFLOW: Read preprocessing & QC plotting with DADA2
     //
-    DADA2_PREPROCESSING (
+
+   /* DADA2_PREPROCESSING (
         ch_trimmed_reads,
         single_end,
         find_truncation_values,
         trunclenf,
         trunclenr
     ).reads.set { ch_filt_reads }
-    ch_versions = ch_versions.mix(DADA2_PREPROCESSING.out.versions)
+    ch_versions = ch_versions.mix(DADA2_PREPROCESSING.out.versions)*/
+
 
     //
     // MODULES: ASV generation with DADA2
     //
 
+
     //run error model
-    if ( !params.illumina_novaseq ) {
+
+      /* if ( !params.illumina_novaseq ) {
         DADA2_ERR ( ch_filt_reads )
         ch_errormodel = DADA2_ERR.out.errormodel
         ch_versions = ch_versions.mix(DADA2_ERR.out.versions)
@@ -393,10 +402,10 @@ workflow AMPLISEQ {
         NOVASEQ_ERR ( DADA2_ERR.out.errormodel )
         ch_errormodel = NOVASEQ_ERR.out.errormodel
         ch_versions = ch_versions.mix(DADA2_ERR.out.versions)
-    }
+    }*/
 
     //group by meta
-    ch_filt_reads
+    /*ch_filt_reads
         .join( ch_errormodel )
         .set { ch_derep_errormodel }
     DADA2_DENOISING ( ch_derep_errormodel.dump(tag: 'into_denoising')  )
@@ -427,12 +436,14 @@ workflow AMPLISEQ {
         ch_versions = ch_versions.mix(MERGE_STATS_STD.out.versions)
     } else {
         ch_stats = DADA2_MERGE.out.dada2stats
-    }
+    } */
+
 
     //
     // SUBWORKFLOW / MODULES : Taxonomic classification with DADA2, SINTAX and/or QIIME2
     //
-    if ( params.multiregion ) {
+
+    /* if ( params.multiregion ) {
         // separate sequences and abundances when several regions
         DADA2_SPLITREGIONS (
             //DADA2_DENOISING per run & region -> per run
@@ -468,12 +479,14 @@ workflow AMPLISEQ {
         // forward results to downstream analysis if single region
         ch_dada2_fasta = DADA2_MERGE.out.fasta
         ch_dada2_asv = DADA2_MERGE.out.asv
-    }
+    } */
+
 
     //
     // MODULE : ASV post-clustering with VSEARCH
     //
-    if (params.vsearch_cluster && !params.multiregion) {
+
+   /* if (params.vsearch_cluster && !params.multiregion) {
         ch_fasta_for_clustering = ch_dada2_fasta
             .map {
                 fasta ->
@@ -486,12 +499,14 @@ workflow AMPLISEQ {
         ch_versions = ch_versions.mix(FILTER_CLUSTERS.out.versions)
         ch_dada2_fasta = FILTER_CLUSTERS.out.fasta
         ch_dada2_asv = FILTER_CLUSTERS.out.asv
-    }
+    } */
+
 
     //
     // Entry for ASV fasta files via "--input_fasta"
     //
-    if ( params.input_fasta ) {
+
+ /*   if ( params.input_fasta ) {
         FORMAT_FASTAINPUT( ch_input_fasta )
         ch_unfiltered_fasta = FORMAT_FASTAINPUT.out.fasta
         ch_versions = ch_versions.mix(FORMAT_FASTAINPUT.out.versions)
@@ -883,7 +898,8 @@ workflow AMPLISEQ {
             run_qiime2
         )
         ch_versions = ch_versions.mix(PHYLOSEQ_WORKFLOW.out.versions.first())
-    }
+    } */
+
 
     //
     // Collate and save software versions
@@ -947,75 +963,8 @@ workflow AMPLISEQ {
     //
     // MODULE: Summary Report
     //
-    if (!params.skip_report && !params.multiregion) {
-        SUMMARY_REPORT (
-            ch_report_template,
-            ch_report_css,
-            ch_report_logo,
-            ch_report_abstract,
-            ch_metadata.ifEmpty( [] ),
-            params.input ? file(params.input) : [], // samplesheet input
-            ch_input_fasta.ifEmpty( [] ), // fasta input
-            !params.input_fasta && !params.skip_fastqc && !params.skip_multiqc ? MULTIQC.out.plots : [], //.collect().flatten().collectFile(name: "fastqc_per_sequence_quality_scores_plot.svg")
-            !params.skip_cutadapt ? CUTADAPT_WORKFLOW.out.summary.collect().ifEmpty( [] ) : [],
-            find_truncation_values,
-            DADA2_PREPROCESSING.out.args.first().ifEmpty( [] ),
-            !params.skip_dada_quality ? DADA2_PREPROCESSING.out.qc_svg.ifEmpty( [] ) : [],
-            !params.skip_dada_quality ? DADA2_PREPROCESSING.out.qc_svg_preprocessed.ifEmpty( [] ) : [],
-            DADA2_ERR.out.svg
-                .map {
-                    meta_old, svgs ->
-                    def meta = [:]
-                    meta.single_end = meta_old.single_end
-                    [ meta, svgs, meta_old.run ] }
-                .groupTuple(by: 0 )
-                .map {
-                    meta_old, svgs, runs ->
-                    def meta = [:]
-                    meta.single_end = meta_old.single_end
-                    meta.run = runs.flatten()
-                    [ meta, svgs.flatten() ]
-                }.ifEmpty( [[],[]] ),
-            DADA2_MERGE.out.asv.ifEmpty( [] ),
-            ch_unfiltered_fasta.ifEmpty( [] ), // this is identical to DADA2_MERGE.out.fasta if !params.input_fasta
-            DADA2_MERGE.out.dada2asv.ifEmpty( [] ),
-            DADA2_MERGE.out.dada2stats.ifEmpty( [] ),
-            params.vsearch_cluster ? FILTER_CLUSTERS.out.asv.ifEmpty( [] ) : [],
-            !params.skip_barrnap ? BARRNAPSUMMARY.out.summary.ifEmpty( [] ) : [],
-            params.filter_ssu ? FILTER_SSU.out.stats.ifEmpty( [] ) : [],
-            params.filter_ssu ? FILTER_SSU.out.fasta.ifEmpty( [] ) : [],
-            params.min_len_asv || params.max_len_asv ? FILTER_LEN_ASV.out.stats.ifEmpty( [] ) : [],
-            params.min_len_asv || params.max_len_asv ? FILTER_LEN_ASV.out.len_orig.ifEmpty( [] ) : [],
-            params.filter_codons ? FILTER_CODONS.out.fasta.ifEmpty( [] ) : [],
-            params.filter_codons ? FILTER_CODONS.out.stats.ifEmpty( [] ) : [],
-            params.cut_its != "none" ? ITSX_CUTASV.out.summary.ifEmpty( [] ) : [],
-            !params.skip_taxonomy && params.dada_ref_taxonomy && !params.skip_dada_taxonomy ? ch_dada2_tax.ifEmpty( [] ) : [],
-            !params.skip_taxonomy && params.dada_ref_taxonomy && !params.skip_dada_taxonomy ? DADA2_TAXONOMY_WF.out.cut_tax.ifEmpty( [[],[]] ) : [[],[]],
-            !params.skip_taxonomy && params.sintax_ref_taxonomy ? ch_sintax_tax.ifEmpty( [] ) : [],
-            !params.skip_taxonomy && ( params.kraken2_ref_taxonomy || params.kraken2_ref_tax_custom ) ? KRAKEN2_TAXONOMY_WF.out.tax_tsv.ifEmpty( [] ) : [],
-            !params.skip_taxonomy && params.pplace_tree ? ch_pplace_tax.ifEmpty( [] ) : [],
-            !params.skip_taxonomy && params.pplace_tree ? FASTA_NEWICK_EPANG_GAPPA.out.heattree.ifEmpty( [[],[]] ) : [[],[]],
-            !params.skip_taxonomy && ( params.qiime_ref_taxonomy || params.qiime_ref_tax_custom || params.classifier ) && run_qiime2_taxonomy ? QIIME2_TAXONOMY.out.tsv.ifEmpty( [] ) : [],
-            run_qiime2,
-            run_qiime2 ? val_used_taxonomy : "",
-            run_qiime2 && ( params.exclude_taxa != "none" || params.min_frequency != 1 || params.min_samples != 1 ) ? ch_dada2_asv.countLines()+","+QIIME2_TABLEFILTERTAXA.out.tsv.countLines() : "",
-            run_qiime2 && ( params.exclude_taxa != "none" || params.min_frequency != 1 || params.min_samples != 1 ) ? FILTER_STATS.out.tsv.ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_barplot ? QIIME2_BARPLOT.out.folder.ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_abundance_tables ? QIIME2_EXPORT.out.abs_tsv.ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_alpha_rarefaction && params.metadata ? "done" : "",
-            run_qiime2 && !params.skip_diversity_indices && params.metadata ? QIIME2_DIVERSITY.out.depth.ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_diversity_indices && params.metadata ? QIIME2_DIVERSITY.out.alpha.collect().ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_diversity_indices && params.metadata ? QIIME2_DIVERSITY.out.beta.collect().ifEmpty( [] ) : [],
-            run_qiime2 && !params.skip_diversity_indices && params.metadata ? QIIME2_DIVERSITY.out.adonis.collect().ifEmpty( [] ) : [],
-            run_qiime2 && params.ancom && params.metadata ? QIIME2_ANCOM.out.ancom.collect().ifEmpty( [] ) : [],
-            run_qiime2 && params.ancombc && params.metadata ? QIIME2_ANCOM.out.ancombc.collect().ifEmpty( [] ) : [],
-            run_qiime2 && params.ancombc_formula && params.metadata ? QIIME2_ANCOM.out.ancombc_formula.collect().ifEmpty( [] ) : [],
-            params.picrust ? PICRUST.out.pathways.ifEmpty( [] ) : [],
-            params.sbdiexport ? SBDIEXPORT.out.sbditables.mix(SBDIEXPORTREANNOTATE.out.sbdiannottables).collect().ifEmpty( [] ) : [],
-            !params.skip_taxonomy ? PHYLOSEQ_WORKFLOW.out.rds.map{info,rds -> [rds]}.collect().ifEmpty( [] ) : []
-        )
-        ch_versions    = ch_versions.mix(SUMMARY_REPORT.out.versions)
-    }
+
+
 
     //
     // Save input files in results folder
